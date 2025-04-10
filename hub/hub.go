@@ -16,13 +16,15 @@ var (
 )
 
 type Hub struct {
-	Clients        map[*Client]bool
-	Rooms          map[int]*Room
-	Registered     chan *Client
-	Unregistered   chan *Client
-	PrivateMessage chan *PrivateMessage
-	Broadcast      chan []byte
-	Shutdown       chan struct{}
+	Clients          map[*Client]bool
+	Room             map[int]*Room
+	NewRoom          chan *CreateRoomRequest
+	Registered       chan *Client
+	Unregistered     chan *Client
+	PrivateMessage   chan *PrivateMessage
+	BroadcastMessage chan []byte
+	GroupMessage     chan []byte
+	Shutdown         chan struct{}
 }
 
 type Client struct {
@@ -44,6 +46,11 @@ type Room struct {
 	Clients map[*Client]bool
 }
 
+type CreateRoomRequest struct {
+	Creator *Client
+	Name    string
+}
+
 type Message struct {
 	From    string `json:"from"`
 	To      string `json:"to"`
@@ -53,12 +60,15 @@ type Message struct {
 
 func NewHub() *Hub {
 	return &Hub{
-		Clients:        make(map[*Client]bool),
-		Registered:     make(chan *Client),
-		Unregistered:   make(chan *Client),
-		PrivateMessage: make(chan *PrivateMessage),
-		Broadcast:      make(chan []byte),
-		Shutdown:       make(chan struct{}),
+		Clients:          make(map[*Client]bool),
+		NewRoom:          make(chan *CreateRoomRequest),
+		Room:             make(map[int]*Room),
+		Registered:       make(chan *Client),
+		Unregistered:     make(chan *Client),
+		PrivateMessage:   make(chan *PrivateMessage),
+		BroadcastMessage: make(chan []byte),
+		GroupMessage:     make(chan []byte),
+		Shutdown:         make(chan struct{}),
 	}
 }
 
@@ -79,7 +89,7 @@ func (u *Hub) Run() {
 				u.broadcastOnlineUsers()
 			}
 
-		case msg := <-u.Broadcast:
+		case msg := <-u.BroadcastMessage:
 			var fromMessage Message
 			if err := json.Unmarshal(msg, &fromMessage); err != nil {
 				log.Printf("Error unmarshalling message when from message: %v", err)
@@ -120,6 +130,22 @@ func (u *Hub) Run() {
 				receipt := []byte(`{"type":"status","content":"User ` + msg.To + ` is not found or not connected"}`)
 				msg.From.Send <- receipt
 			}
+
+		case req := <-u.NewRoom:
+			ID := len(u.Room) + 1
+
+			room := &Room{
+				ID:      ID,
+				Name:    req.Name,
+				Clients: make(map[*Client]bool),
+			}
+			room.Clients[req.Creator] = true
+			u.Room[ID] = room
+
+			log.Printf("Room %s created by %s with ID %d", req.Name, req.Creator.Username, ID)
+
+			receipt := []byte(`{"type":"status","content":"Room ` + req.Name + ` created"}`)
+			req.Creator.Send <- receipt
 
 		case <-u.Shutdown:
 			for client := range u.Clients {
@@ -199,7 +225,7 @@ func (u *Client) ReadPump() {
 		}
 
 		if message.Type == "group" {
-			u.Hub.Broadcast <- msg
+			u.Hub.BroadcastMessage <- msg
 		} else if message.Type == "private" {
 			if message.To == "" {
 				continue
@@ -209,6 +235,16 @@ func (u *Client) ReadPump() {
 				To:      message.To,
 				Message: msg,
 			}
+		} else if message.Type == "create_room" {
+			if message.Content == "" {
+				continue
+			}
+			newRoom := &CreateRoomRequest{
+				Creator: u,
+				Name:    message.Content,
+			}
+
+			u.Hub.NewRoom <- newRoom
 		}
 	}
 }
