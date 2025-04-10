@@ -3,6 +3,7 @@ package hub
 import (
 	"encoding/json"
 	"log"
+	"strconv"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -56,6 +57,7 @@ type Message struct {
 	To      string `json:"to"`
 	Type    string `json:"type"`
 	Content string `json:"content"`
+	GroupID int    `json:"group_id"`
 }
 
 func NewHub() *Hub {
@@ -130,6 +132,9 @@ func (u *Hub) Run() {
 				receipt := []byte(`{"type":"status","content":"User ` + msg.To + ` is not found or not connected"}`)
 				msg.From.Send <- receipt
 			}
+
+		// case msg := <-u.GroupMessage:
+		// 	var fromMessage Message
 
 		case req := <-u.NewRoom:
 			ID := len(u.Room) + 1
@@ -243,8 +248,44 @@ func (u *Client) ReadPump() {
 				Creator: u,
 				Name:    message.Content,
 			}
-
 			u.Hub.NewRoom <- newRoom
+		} else if message.Type == "join_room" {
+			if message.GroupID == 0 {
+				receipt := []byte(`{"type":"status","content":"Group ID is required"}`)
+				u.Send <- receipt
+				continue
+			}
+
+			room, ok := u.Hub.Room[message.GroupID]
+			if !ok {
+				receipt := []byte(`{"type":"status","content":"Room not found"}`)
+				u.Send <- receipt
+				continue
+			}
+
+			if _, ok := room.Clients[u]; ok {
+				receipt := []byte(`{"type":"status","content":"You are already in this room"}`)
+				u.Send <- receipt
+				continue
+			}
+
+			room.Clients[u] = true
+			receipt := []byte(`{"type":"status","content":"You're joining ` + room.Name + `"}`)
+			u.Send <- receipt
+
+			member := len(room.Clients)
+			receipt = []byte(`{"type":"status","content":"` + u.Username + ` Connected. Total Room Members: ` + strconv.Itoa(member) + `"}`)
+			for client := range room.Clients {
+				if client == u {
+					continue
+				}
+				select {
+				case client.Send <- receipt:
+				default:
+					delete(u.Hub.Clients, client)
+					close(client.Send)
+				}
+			}
 		}
 	}
 }
