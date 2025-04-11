@@ -26,7 +26,7 @@ func main() {
 	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		log.Println("Starting server on :8080")
+		log.Println("Starting server on: 8080")
 		if err := srv.ListenAndServe(); err != nil {
 			log.Fatalf("ListenAndServe: %v", err)
 		}

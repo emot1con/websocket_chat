@@ -20,6 +20,7 @@ type Hub struct {
 	Clients          map[*Client]bool
 	Room             map[int]*Room
 	NewRoom          chan *CreateRoomRequest
+	JoinRoom         chan *JoinRoomRequest
 	Registered       chan *Client
 	Unregistered     chan *Client
 	PrivateMessage   chan *PrivateMessage
@@ -52,6 +53,11 @@ type CreateRoomRequest struct {
 	Name    string
 }
 
+type JoinRoomRequest struct {
+	Client  *Client
+	GroupID int
+}
+
 type Message struct {
 	From    string `json:"from"`
 	To      string `json:"to"`
@@ -64,6 +70,7 @@ func NewHub() *Hub {
 	return &Hub{
 		Clients:          make(map[*Client]bool),
 		NewRoom:          make(chan *CreateRoomRequest),
+		JoinRoom:         make(chan *JoinRoomRequest),
 		Room:             make(map[int]*Room),
 		Registered:       make(chan *Client),
 		Unregistered:     make(chan *Client),
@@ -133,9 +140,6 @@ func (u *Hub) Run() {
 				msg.From.Send <- receipt
 			}
 
-		// case msg := <-u.GroupMessage:
-		// 	var fromMessage Message
-
 		case req := <-u.NewRoom:
 			ID := len(u.Room) + 1
 
@@ -151,6 +155,40 @@ func (u *Hub) Run() {
 
 			receipt := []byte(`{"type":"status","content":"Room ` + req.Name + ` created"}`)
 			req.Creator.Send <- receipt
+
+		case req := <-u.JoinRoom:
+			room, ok := u.Room[req.GroupID]
+			if !ok {
+				receipt := []byte(`{"type":"status","content":"Room not found"}`)
+				req.Client.Send <- receipt
+				continue
+			}
+
+			if _, ok := room.Clients[req.Client]; ok {
+				receipt := []byte(`{"type":"status","content":"You are already in this room"}`)
+				req.Client.Send <- receipt
+				continue
+			}
+
+			room.Clients[req.Client] = true
+
+			receipt := []byte(`{"type":"status","content":"You're joining ` + room.Name + `"}`)
+			req.Client.Send <- receipt
+
+			member := len(room.Clients)
+			broadcastMsg := []byte(`{"type":"status","content":"` + req.Client.Username + ` Connected. Total Members: ` + strconv.Itoa(member) + `"}`)
+
+			for client := range room.Clients {
+				if client == req.Client {
+					continue
+				}
+				select {
+				case client.Send <- broadcastMsg:
+				default:
+					delete(u.Clients, client)
+					close(client.Send)
+				}
+			}
 
 		case <-u.Shutdown:
 			for client := range u.Clients {
@@ -256,35 +294,9 @@ func (u *Client) ReadPump() {
 				continue
 			}
 
-			room, ok := u.Hub.Room[message.GroupID]
-			if !ok {
-				receipt := []byte(`{"type":"status","content":"Room not found"}`)
-				u.Send <- receipt
-				continue
-			}
-
-			if _, ok := room.Clients[u]; ok {
-				receipt := []byte(`{"type":"status","content":"You are already in this room"}`)
-				u.Send <- receipt
-				continue
-			}
-
-			room.Clients[u] = true
-			receipt := []byte(`{"type":"status","content":"You're joining ` + room.Name + `"}`)
-			u.Send <- receipt
-
-			member := len(room.Clients)
-			receipt = []byte(`{"type":"status","content":"` + u.Username + ` Connected. Total Room Members: ` + strconv.Itoa(member) + `"}`)
-			for client := range room.Clients {
-				if client == u {
-					continue
-				}
-				select {
-				case client.Send <- receipt:
-				default:
-					delete(u.Hub.Clients, client)
-					close(client.Send)
-				}
+			u.Hub.JoinRoom <- &JoinRoomRequest{
+				Client:  u,
+				GroupID: message.GroupID,
 			}
 		}
 	}
