@@ -17,16 +17,15 @@ var (
 )
 
 type Hub struct {
-	Clients          map[*Client]bool
-	Room             map[int]*Room
-	NewRoom          chan *CreateRoomRequest
-	JoinRoom         chan *JoinRoomRequest
-	Registered       chan *Client
-	Unregistered     chan *Client
-	PrivateMessage   chan *PrivateMessage
-	BroadcastMessage chan []byte
-	GroupMessage     chan []byte
-	Shutdown         chan struct{}
+	Clients        map[*Client]bool
+	Room           map[int]*Room
+	NewRoom        chan *CreateRoomRequest
+	JoinRoom       chan *JoinRoomRequest
+	Registered     chan *Client
+	Unregistered   chan *Client
+	PrivateMessage chan *PrivateMessage
+	GroupMessage   chan *GroupMessage
+	Shutdown       chan struct{}
 }
 
 type Client struct {
@@ -39,7 +38,13 @@ type Client struct {
 type PrivateMessage struct {
 	From    *Client
 	To      string
-	Message []byte
+	Content []byte
+}
+
+type GroupMessage struct {
+	From    *Client
+	Room    *Room
+	Content []byte
 }
 
 type Room struct {
@@ -68,16 +73,15 @@ type Message struct {
 
 func NewHub() *Hub {
 	return &Hub{
-		Clients:          make(map[*Client]bool),
-		NewRoom:          make(chan *CreateRoomRequest),
-		JoinRoom:         make(chan *JoinRoomRequest),
-		Room:             make(map[int]*Room),
-		Registered:       make(chan *Client),
-		Unregistered:     make(chan *Client),
-		PrivateMessage:   make(chan *PrivateMessage),
-		BroadcastMessage: make(chan []byte),
-		GroupMessage:     make(chan []byte),
-		Shutdown:         make(chan struct{}),
+		Clients:        make(map[*Client]bool),
+		NewRoom:        make(chan *CreateRoomRequest),
+		JoinRoom:       make(chan *JoinRoomRequest),
+		Room:           make(map[int]*Room),
+		Registered:     make(chan *Client),
+		Unregistered:   make(chan *Client),
+		PrivateMessage: make(chan *PrivateMessage),
+		GroupMessage:   make(chan *GroupMessage),
+		Shutdown:       make(chan struct{}),
 	}
 }
 
@@ -98,19 +102,13 @@ func (u *Hub) Run() {
 				u.broadcastOnlineUsers()
 			}
 
-		case msg := <-u.BroadcastMessage:
-			var fromMessage Message
-			if err := json.Unmarshal(msg, &fromMessage); err != nil {
-				log.Printf("Error unmarshalling message when from message: %v", err)
-				continue
-			}
-			for client := range u.Clients {
-				if client.Username == fromMessage.From {
+		case msg := <-u.GroupMessage:
+			for client := range msg.Room.Clients {
+				if client == msg.From {
 					continue
 				}
-
 				select {
-				case client.Send <- msg:
+				case client.Send <- msg.Content:
 				default:
 					delete(u.Clients, client)
 					close(client.Send)
@@ -123,7 +121,7 @@ func (u *Hub) Run() {
 				if msg.To == client.Username {
 					found = true
 					select {
-					case client.Send <- msg.Message:
+					case client.Send <- msg.Content:
 						if msg.From != nil {
 							receipt := []byte(`{"type":"status","content":"Message delivered to ` + msg.To + `"}`)
 							msg.From.Send <- receipt
@@ -258,6 +256,8 @@ func (u *Client) ReadPump() {
 		}
 
 		if message.Content == "" {
+			receipt := []byte(`{"type":"status","content":"Message content is required"}`)
+			u.Send <- receipt
 			continue
 		}
 
@@ -267,16 +267,31 @@ func (u *Client) ReadPump() {
 			continue
 		}
 
-		if message.Type == "group" {
-			u.Hub.BroadcastMessage <- msg
-		} else if message.Type == "private" {
+		if message.Type == "group_chat" {
+			if message.GroupID == 0 {
+				continue
+			}
+
+			room, ok := u.Hub.Room[message.GroupID]
+			if !ok || !room.Clients[u] {
+				receipt := []byte(`{"type":"status","content":"Group not found"}`)
+				u.Send <- receipt
+				continue
+			}
+
+			u.Hub.GroupMessage <- &GroupMessage{
+				From:    u,
+				Room:    room,
+				Content: msg,
+			}
+		} else if message.Type == "private_chat" {
 			if message.To == "" {
 				continue
 			}
 			u.Hub.PrivateMessage <- &PrivateMessage{
 				From:    u,
 				To:      message.To,
-				Message: msg,
+				Content: msg,
 			}
 		} else if message.Type == "create_room" {
 			if message.Content == "" {
@@ -293,7 +308,6 @@ func (u *Client) ReadPump() {
 				u.Send <- receipt
 				continue
 			}
-
 			u.Hub.JoinRoom <- &JoinRoomRequest{
 				Client:  u,
 				GroupID: message.GroupID,
