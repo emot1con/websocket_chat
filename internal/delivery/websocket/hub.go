@@ -89,7 +89,6 @@ func NewHub() *Hub {
 }
 
 func (u *Hub) Run() {
-
 	for {
 		select {
 		case client := <-u.Registered:
@@ -104,7 +103,19 @@ func (u *Hub) Run() {
 				if err != nil {
 					log.Fatal(err)
 				}
-				u.Room[room.ID]
+				userRoom := &Room{
+					ID:      room.ID,
+					Name:    room.Name,
+					Clients: make(map[*Client]bool),
+				}
+				for _, member := range members {
+					if member.RoomID == room.ID && member.Username == client.Username {
+						log.Printf("you member of room %s", room.Name)
+						userRoom.Clients[client] = true
+					}
+				}
+
+				u.Room[room.ID] = userRoom
 			}
 			if err != nil {
 				log.Fatal(err)
