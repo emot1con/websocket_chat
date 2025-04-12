@@ -1,10 +1,11 @@
-package hub
+package websocket
 
 import (
 	"encoding/json"
 	"log"
 	"strconv"
 	"time"
+	"websocket_try3/internal/usecase"
 
 	"github.com/gorilla/websocket"
 )
@@ -25,6 +26,7 @@ type Hub struct {
 	Unregistered   chan *Client
 	PrivateMessage chan *PrivateMessage
 	GroupMessage   chan *GroupMessage
+	UseCase        *usecase.WebSocketUsecase
 	Shutdown       chan struct{}
 }
 
@@ -81,17 +83,33 @@ func NewHub() *Hub {
 		Unregistered:   make(chan *Client),
 		PrivateMessage: make(chan *PrivateMessage),
 		GroupMessage:   make(chan *GroupMessage),
+		UseCase:        &usecase.WebSocketUsecase{},
 		Shutdown:       make(chan struct{}),
 	}
 }
 
 func (u *Hub) Run() {
+
 	for {
 		select {
 		case client := <-u.Registered:
 			u.Clients[client] = true
+
 			log.Printf("%s Is Connected", client.Username)
 			log.Printf("Total Connected Users: %d", len(u.Clients))
+
+			rooms, err := u.UseCase.ListUserRooms(client.Username)
+			for _, room := range rooms {
+				_, members, err := u.UseCase.GetRoomInfo(room.ID)
+				if err != nil {
+					log.Fatal(err)
+				}
+				u.Room[room.ID]
+			}
+			if err != nil {
+				log.Fatal(err)
+			}
+
 			u.broadcastOnlineUsers()
 
 		case client := <-u.Unregistered:
@@ -103,12 +121,16 @@ func (u *Hub) Run() {
 			}
 
 		case msg := <-u.GroupMessage:
+			if err := u.UseCase.SendGroupMessage(msg.From.Username, msg.Room.ID, string(msg.Content)); err != nil {
+				log.Printf("Error sending group message: %v", err)
+			}
 			for client := range msg.Room.Clients {
 				if client == msg.From {
 					continue
 				}
 				select {
 				case client.Send <- msg.Content:
+
 				default:
 					delete(u.Clients, client)
 					close(client.Send)
@@ -122,7 +144,8 @@ func (u *Hub) Run() {
 					found = true
 					select {
 					case client.Send <- msg.Content:
-						if msg.From != nil {
+						if msg.From != nil || msg.To != "" {
+							u.UseCase.SendPrivateMessage(msg.From.Username, msg.To, string(msg.Content))
 							receipt := []byte(`{"type":"status","content":"Message delivered to ` + msg.To + `"}`)
 							msg.From.Send <- receipt
 						}
@@ -149,6 +172,11 @@ func (u *Hub) Run() {
 			room.Clients[req.Creator] = true
 			u.Room[ID] = room
 
+			if _, err := u.UseCase.CreateRoom(req.Name, req.Creator.Username); err != nil {
+				log.Printf("Error creating room: %v", err)
+				return
+			}
+
 			log.Printf("Room %s created by %s with ID %d", req.Name, req.Creator.Username, ID)
 
 			receipt := []byte(`{"type":"status","content":"Room ` + req.Name + ` created"}`)
@@ -169,6 +197,8 @@ func (u *Hub) Run() {
 			}
 
 			room.Clients[req.Client] = true
+
+			u.UseCase.AddRoomMember(room.ID, req.Client.Username)
 
 			receipt := []byte(`{"type":"status","content":"You're joining ` + room.Name + `"}`)
 			req.Client.Send <- receipt

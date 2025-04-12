@@ -1,37 +1,48 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
-	"websocket_try3/client"
-	"websocket_try3/hub"
+	"time"
+	"websocket_try3/internal/delivery"
+
+	"github.com/joho/godotenv"
 )
 
 func main() {
-	hubs := hub.NewHub()
-	go hubs.Run()
+	if err := godotenv.Load(); err != nil {
+		log.Fatalf("Error loading .env file: %v", err)
+	}
 
-	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		client.ServeWs(w, r, hubs)
-	})
+	mux := delivery.Handler()
 
 	srv := &http.Server{
-		Addr: ":8080",
+		Addr:    ":8080",
+		Handler: mux,
 	}
 
 	done := make(chan os.Signal, 1)
 	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		log.Println("Starting server on: 8080")
-		if err := srv.ListenAndServe(); err != nil {
+		log.Printf("Starting server on: %s", srv.Addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("ListenAndServe: %v", err)
 		}
 	}()
-	<-done
 
+	<-done
 	log.Println("Shutting down server...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Printf("Server shutdown failed: %v", err)
+	}
+	log.Println("Server exited properly")
 }
