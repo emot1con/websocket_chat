@@ -166,6 +166,10 @@ func (u *WebSocketUsecase) GetRoomInfo(roomID int) (*domain.Room, []domain.RoomM
 	return room, members, nil
 }
 
+func (u *WebSocketUsecase) GetRoomMembers(roomID int) ([]domain.RoomMember, error) {
+	return u.roomRepo.GetRoomMembers(roomID)
+}
+
 func (u *WebSocketUsecase) ListUserRooms(username string) ([]domain.Room, error) {
 	return u.roomRepo.GetUserRooms(username)
 }

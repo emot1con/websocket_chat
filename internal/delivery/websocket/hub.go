@@ -98,27 +98,40 @@ func (u *Hub) Run() {
 			log.Printf("Total Connected Users: %d", len(u.Clients))
 
 			rooms, err := u.UseCase.ListUserRooms(client.Username)
+			if err != nil {
+				log.Printf("Failed to get user rooms: %v", err)
+				continue
+			}
+
 			for _, room := range rooms {
-				_, members, err := u.UseCase.GetRoomInfo(room.ID)
-				if err != nil {
-					log.Fatal(err)
-				}
-				userRoom := &Room{
-					ID:      room.ID,
-					Name:    room.Name,
-					Clients: make(map[*Client]bool),
-				}
-				for _, member := range members {
-					if member.RoomID == room.ID && member.Username == client.Username {
-						log.Printf("you member of room %s", room.Name)
-						userRoom.Clients[client] = true
+				existingRoom, exists := u.Room[room.ID]
+				if !exists {
+					existingRoom = &Room{
+						ID:      room.ID,
+						Name:    room.Name,
+						Clients: make(map[*Client]bool),
 					}
+					u.Room[room.ID] = existingRoom
+
+					members, err := u.UseCase.GetRoomMembers(room.ID)
+					if err != nil {
+						log.Printf("Failed to get room members: %v", err)
+						continue
+					}
+
+					for _, member := range members {
+						for c := range u.Clients {
+							if c.Username == member.Username {
+								existingRoom.Clients[c] = true
+								break
+							}
+						}
+					}
+					log.Printf("total %s member: %d", room.Name, len(members))
 				}
 
-				u.Room[room.ID] = userRoom
-			}
-			if err != nil {
-				log.Fatal(err)
+				existingRoom.Clients[client] = true
+
 			}
 
 			u.broadcastOnlineUsers()
@@ -128,6 +141,19 @@ func (u *Hub) Run() {
 				delete(u.Clients, client)
 				close(client.Send)
 				log.Printf("%s Is Disconnected", client.Username)
+
+				rooms, err := u.UseCase.ListUserRooms(client.Username)
+				if err != nil {
+					log.Printf("Failed to get user rooms: %v", err)
+					continue
+				}
+
+				for _, room := range rooms {
+					existingRoom := u.Room[room.ID]
+					existingRoom.Clients[client] = false
+					delete(existingRoom.Clients, client)
+					log.Printf("Logged Out user %s from room %s", client.Username, room.Name)
+				}
 				u.broadcastOnlineUsers()
 			}
 

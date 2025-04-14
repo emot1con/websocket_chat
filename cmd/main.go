@@ -8,7 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
-	"websocket_try3/internal/delivery"
+	"websocket_try3/internal/delivery/http_delivery"
 
 	"github.com/joho/godotenv"
 )
@@ -18,7 +18,7 @@ func main() {
 		log.Fatalf("Error loading .env file: %v", err)
 	}
 
-	mux := delivery.Handler()
+	mux := http_delivery.Handler()
 
 	srv := &http.Server{
 		Addr:    ":8080",
@@ -29,7 +29,7 @@ func main() {
 	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		log.Printf("Starting server on: %s", srv.Addr)
+		log.Println("Starting server on: 8080")
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("ListenAndServe: %v", err)
 		}
