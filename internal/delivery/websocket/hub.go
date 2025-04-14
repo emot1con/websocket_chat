@@ -318,7 +318,7 @@ func (u *Client) ReadPump() {
 
 		message.From = u.Username
 
-		if message.To == "" && message.Type == "group" {
+		if message.To == "" && message.Type == "group_chat" {
 			message.To = "general"
 		}
 
