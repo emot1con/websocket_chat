@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"strconv"
+	"sync"
 	"time"
 	"websocket_try3/internal/usecase"
 
@@ -28,6 +29,7 @@ type Hub struct {
 	GroupMessage   chan *GroupMessage
 	UseCase        *usecase.WebSocketUsecase
 	Shutdown       chan struct{}
+	Mutex          *sync.Mutex
 }
 
 type Client struct {
@@ -85,6 +87,7 @@ func NewHub() *Hub {
 		GroupMessage:   make(chan *GroupMessage),
 		UseCase:        &usecase.WebSocketUsecase{},
 		Shutdown:       make(chan struct{}),
+		Mutex:          &sync.Mutex{},
 	}
 }
 
@@ -92,6 +95,7 @@ func (u *Hub) Run() {
 	for {
 		select {
 		case client := <-u.Registered:
+			u.Mutex.Lock()
 			u.Clients[client] = true
 
 			log.Printf("%s Is Connected", client.Username)
@@ -100,9 +104,9 @@ func (u *Hub) Run() {
 			rooms, err := u.UseCase.ListUserRooms(client.Username)
 			if err != nil {
 				log.Printf("Failed to get user rooms: %v", err)
+				u.Mutex.Unlock()
 				continue
 			}
-
 			for _, room := range rooms {
 				existingRoom, exists := u.Room[room.ID]
 				if !exists {
@@ -129,14 +133,14 @@ func (u *Hub) Run() {
 					}
 					log.Printf("total %s member: %d", room.Name, len(members))
 				}
-
 				existingRoom.Clients[client] = true
-
 			}
+			u.Mutex.Unlock()
 
 			u.broadcastOnlineUsers()
 
 		case client := <-u.Unregistered:
+			u.Mutex.Lock()
 			if _, ok := u.Clients[client]; ok {
 				delete(u.Clients, client)
 				close(client.Send)
@@ -145,6 +149,7 @@ func (u *Hub) Run() {
 				rooms, err := u.UseCase.ListUserRooms(client.Username)
 				if err != nil {
 					log.Printf("Failed to get user rooms: %v", err)
+					u.Mutex.Unlock()
 					continue
 				}
 
@@ -156,6 +161,7 @@ func (u *Hub) Run() {
 				}
 				u.broadcastOnlineUsers()
 			}
+			u.Mutex.Unlock()
 
 		case msg := <-u.GroupMessage:
 			if err := u.UseCase.SendGroupMessage(msg.From.Username, msg.Room.ID, string(msg.Content)); err != nil {
