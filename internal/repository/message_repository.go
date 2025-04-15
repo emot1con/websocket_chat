@@ -15,6 +15,7 @@ func NewMessageRepository(db *sql.DB) *MessageRepository {
 }
 
 func (r *MessageRepository) SavePrivateMessage(msg *domain.Message) error {
+
 	query := `
 		INSERT INTO messages (
 			from_user, to_user, content, type, created_at
@@ -28,10 +29,16 @@ func (r *MessageRepository) SavePrivateMessage(msg *domain.Message) error {
 		"private",
 		msg.CreatedAt,
 	)
-	return err
+
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (r *MessageRepository) SaveGroupMessage(msg *domain.Message) error {
+
 	query := `
 		INSERT INTO messages (
 			from_user, content, type, group_id, created_at
@@ -45,7 +52,10 @@ func (r *MessageRepository) SaveGroupMessage(msg *domain.Message) error {
 		msg.GroupID,
 		msg.CreatedAt,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (r *MessageRepository) GetPrivateMessages(from, to string, limit int) ([]domain.Message, error) {

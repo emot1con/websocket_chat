@@ -111,7 +111,6 @@ func (u *Hub) Run(r *redis.Client) {
 			for _, room := range rooms {
 				existingRoom, exists := u.Room[room.ID]
 				if !exists {
-					log.Println("Creating new room")
 					existingRoom = &Room{
 						ID:      room.ID,
 						Name:    room.Name,
@@ -151,7 +150,7 @@ func (u *Hub) Run(r *redis.Client) {
 
 		case msg := <-u.GroupMessage:
 			if err := u.UseCase.SendGroupMessage(msg.From.Username, msg.Room.ID, string(msg.Content)); err != nil {
-				log.Printf("Error sending group message: %v", err)
+				log.Printf("Error saving group message: %v", err)
 			}
 			for client := range msg.Room.Clients {
 				if client == msg.From {
@@ -179,8 +178,10 @@ func (u *Hub) Run(r *redis.Client) {
 			select {
 			case client.Send <- msg.Content:
 				found = true
+				if err := u.UseCase.SendPrivateMessage(msg.From.Username, msg.To, string(msg.Content)); err != nil {
+					log.Printf("Error saving private message: %v", err)
+				}
 				if msg.From != nil || msg.To != "" {
-					u.UseCase.SendPrivateMessage(msg.From.Username, msg.To, string(msg.Content))
 					receipt := []byte(`{"type":"status","content":"Message delivered to ` + msg.To + `"}`)
 					msg.From.Send <- receipt
 				}
