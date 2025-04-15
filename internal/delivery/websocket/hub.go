@@ -1,7 +1,9 @@
 package websocket
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"strconv"
 	"sync"
@@ -9,6 +11,7 @@ import (
 	"websocket_try3/internal/usecase"
 
 	"github.com/gorilla/websocket"
+	"github.com/redis/go-redis/v9"
 )
 
 var (
@@ -20,6 +23,7 @@ var (
 
 type Hub struct {
 	Clients        map[*Client]bool
+	ClientsByUser  map[string]*Client
 	Room           map[int]*Room
 	NewRoom        chan *CreateRoomRequest
 	JoinRoom       chan *JoinRoomRequest
@@ -78,6 +82,7 @@ type Message struct {
 func NewHub() *Hub {
 	return &Hub{
 		Clients:        make(map[*Client]bool),
+		ClientsByUser:  make(map[string]*Client),
 		NewRoom:        make(chan *CreateRoomRequest),
 		JoinRoom:       make(chan *JoinRoomRequest),
 		Room:           make(map[int]*Room),
@@ -91,12 +96,13 @@ func NewHub() *Hub {
 	}
 }
 
-func (u *Hub) Run() {
+func (u *Hub) Run(r *redis.Client) {
 	for {
 		select {
 		case client := <-u.Registered:
 			u.Mutex.Lock()
 			u.Clients[client] = true
+			u.ClientsByUser[client.Username] = client
 
 			log.Printf("%s Is Connected", client.Username)
 			log.Printf("Total Connected Users: %d", len(u.Clients))
@@ -143,6 +149,7 @@ func (u *Hub) Run() {
 			u.Mutex.Lock()
 			if _, ok := u.Clients[client]; ok {
 				delete(u.Clients, client)
+				delete(u.ClientsByUser, client.Username)
 				close(client.Send)
 				log.Printf("%s Is Disconnected", client.Username)
 
@@ -176,29 +183,66 @@ func (u *Hub) Run() {
 
 				default:
 					delete(u.Clients, client)
+					delete(u.ClientsByUser, client.Username)
 					close(client.Send)
 				}
 			}
 
 		case msg := <-u.PrivateMessage:
 			found := false
-			for client := range u.Clients {
-				if msg.To == client.Username {
+
+			cacheClient := new(Client)
+			clientCache, err := r.Get(context.Background(), fmt.Sprintf("cache:user:%s", msg.To)).Result()
+			if err == nil {
+				if err := json.Unmarshal([]byte(clientCache), cacheClient); err != nil {
+					log.Printf("Error unmarshalling cache client: %v", err)
+				}
+				if msg.To == cacheClient.Username {
 					found = true
 					select {
-					case client.Send <- msg.Content:
+					case cacheClient.Send <- msg.Content:
 						if msg.From != nil || msg.To != "" {
+							log.Println("Sending private message to cache client")
 							u.UseCase.SendPrivateMessage(msg.From.Username, msg.To, string(msg.Content))
 							receipt := []byte(`{"type":"status","content":"Message delivered to ` + msg.To + `"}`)
 							msg.From.Send <- receipt
 						}
 					default:
-						delete(u.Clients, client)
-						close(client.Send)
+						delete(u.Clients, cacheClient)
+						close(cacheClient.Send)
 					}
-					break
+				}
+			} else {
+				for client := range u.Clients {
+					if msg.To == client.Username {
+						found = true
+						select {
+						case client.Send <- msg.Content:
+							if msg.From != nil || msg.To != "" {
+								u.UseCase.SendPrivateMessage(msg.From.Username, msg.To, string(msg.Content))
+								receipt := []byte(`{"type":"status","content":"Message delivered to ` + msg.To + `"}`)
+								msg.From.Send <- receipt
+
+								parsedClient, err := json.Marshal(client)
+								if err != nil {
+									log.Printf("Error marshalling client: %v", err)
+									continue
+								}
+
+								if err := r.Set(context.Background(), fmt.Sprintf("cache:user:%s", client.Username), parsedClient, 15*time.Minute).Err(); err != nil {
+									log.Printf("Error setting cache: %v", err)
+								}
+							}
+						default:
+							delete(u.Clients, client)
+							delete(u.ClientsByUser, client.Username)
+							close(client.Send)
+						}
+						break
+					}
 				}
 			}
+
 			if !found || msg.To == "" {
 				receipt := []byte(`{"type":"status","content":"User ` + msg.To + ` is not found or not connected"}`)
 				msg.From.Send <- receipt
@@ -265,6 +309,7 @@ func (u *Hub) Run() {
 			for client := range u.Clients {
 				close(client.Send)
 				delete(u.Clients, client)
+				delete(u.ClientsByUser, client.Username)
 			}
 			return
 		}
